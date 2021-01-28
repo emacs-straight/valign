@@ -5,7 +5,7 @@
 ;; Author: Yuan Fu <casouri@gmail.com>
 ;; Maintainer: Yuan Fu <casouri@gmail.com>
 ;; URL: https://github.com/casouri/valign
-;; Version: 3.0.0
+;; Version: 3.1.0
 ;; Keywords: convenience, text, table
 ;; Package-Requires: ((emacs "26.0"))
 
@@ -45,6 +45,22 @@
 ;;
 ;; - Hidden links in markdown still occupy the full length of the link
 ;;   because it uses character composition, which we don’t support.
+;;
+;; Customization
+;;
+;; valign-fancy-bar               If non-nil, use pretty vertical bars.
+;; valign-not-align-after-list    Valign doesn't align after these
+;;                                commands.
+;; valign-signal-parse-error      If non-nil, emit parse errors.
+;; valign-max-table-size          Valign doesn't align tables of size
+;;                                larger than this value.
+;; valign-table-fallback          Face for tables that are not aligned
+;;                                because of their size.
+;;
+;; Uninteresting variables
+;;
+;; valign-lighter
+;; valign-box-charset-alist
 
 ;;; Developer:
 ;;
@@ -206,7 +222,9 @@ right bar."
             (save-excursion
               (unless (search-forward bar-char (line-end-position) t)
                 (signal 'valign-parse-error
-                        '("Missing the right bar (|)")))
+                        (list (format
+                               "Missing the right bar (|) around %d"
+                               (line-end-position)))))
               (match-beginning 0)))
            ;; `content-beg-strict' is the beginning of the content
            ;; excluding any white space. Same for `content-end-strict'.
@@ -293,27 +311,33 @@ properties must be cleaned before using this.
 
 If WITH-PREFIX is non-nil, don’t subtract the width of line
 prefix."
-  (let* ((window (get-buffer-window))
-         ;; This computes the prefix width.  This trick doesn’t seem
-         ;; work if the point is at the beginning of a line, so we use
-         ;; TO instead of FROM.
-         ;;
-         ;; Why all this fuss: Org puts some display property on white
-         ;; spaces in a cell: (space :relative-width 1).  And that
-         ;; messes up the calculation of prefix: now it returns the
-         ;; width of a space instead of 0 when there is no line
-         ;; prefix.  So we move the test point around until it doesn’t
-         ;; sit on a character with display properties.
-         (line-prefix
-          (let ((pos to))
-            (while (get-char-property pos 'display)
-              (cl-decf pos))
-            (car (window-text-pixel-size window pos pos)))))
-    (- (car (window-text-pixel-size window from to))
-       (if with-prefix 0 line-prefix)
-       (if (bound-and-true-p display-line-numbers-mode)
-           (line-number-display-width 'pixel)
-         0))))
+  ;; HACK: You would expect (window-text-pixel-size WINDOW FROM TO) to
+  ;; return line-number-display-width when FROM equals to TO, but no,
+  ;; it returns 0.  Then if we still subtract line number width, we
+  ;; get a negative number.  So if FROM = TO, we simply return 0.
+  (if (eq from to)
+      0
+    (let* ((window (get-buffer-window))
+           ;; This computes the prefix width.  This trick doesn’t seem
+           ;; work if the point is at the beginning of a line, so we use
+           ;; TO instead of FROM.
+           ;;
+           ;; Why all this fuss: Org puts some display property on
+           ;; white spaces in a cell: like (space :relative-width 1).
+           ;; That messes up the calculation of the prefix: now it
+           ;; returns the width of a space instead of 0 when there is
+           ;; no line prefix.  So we move the test point around until
+           ;; it doesn’t sit on a character with display properties.
+           (line-prefix
+            (let ((pos to))
+              (while (get-char-property pos 'display)
+                (cl-decf pos))
+              (car (window-text-pixel-size window pos pos)))))
+      (- (car (window-text-pixel-size window from to))
+         (if with-prefix 0 line-prefix)
+         (if (bound-and-true-p display-line-numbers-mode)
+             (line-number-display-width 'pixel)
+           0)))))
 
 (defun valign--separator-p ()
   "If the current cell is actually a separator.
@@ -474,15 +498,17 @@ TYPE must be 'org.  Start at point, stop at LIMIT."
   (save-excursion
     (beginning-of-line)
     (skip-chars-forward " \t")
-    (member (char-to-string (char-after))
-            (append
-             (cl-loop for elt in valign-box-charset-alist
-                      for charset = (cdr elt)
-                      collect (valign-box-char 1 charset)
-                      collect (valign-box-char 4 charset)
-                      collect (valign-box-char 7 charset)
-                      collect (valign-box-char 'v charset))
-             '("|")))))
+    (or (eq (char-after) ?|)
+        (and (member (char-to-string (char-after))
+                     (cl-loop for elt in valign-box-charset-alist
+                              for charset = (cdr elt)
+                              collect (valign-box-char 1 charset)
+                              collect (valign-box-char 4 charset)
+                              collect (valign-box-char 7 charset)
+                              collect (valign-box-char 'v charset)))
+             ;; Exclude +<space> (someone uses + as a bullet), not
+             ;; bullet proof but good enough for now.
+             (not (eq (char-after (1+ (point))) ?\s))))))
 
 (defun valign--align-p ()
   "Return non-nil if we should align the table at point."
@@ -668,14 +694,31 @@ COLUMN-WIDTH-LIST is returned by `valign--calculate-cell-width'."
 
 ;;; Align
 
-(defvar valign-not-align-after-list '(self-insert-command
-                                      org-self-insert-command
-                                      markdown-outdent-or-delete
-                                      org-delete-backward-char
-                                      backward-kill-word
-                                      delete-char
-                                      kill-word)
-  "Valign doesn’t align table after these commands.")
+(defcustom valign-not-align-after-list '(self-insert-command
+                                         org-self-insert-command
+                                         markdown-outdent-or-delete
+                                         org-delete-backward-char
+                                         backward-kill-word
+                                         delete-char
+                                         kill-word)
+  "Valign doesn’t align table after these commands."
+  :type '(list symbol)
+  :group 'valign)
+
+(defvar valign-signal-parse-error nil
+  "When non-nil, signal parse error.")
+
+(defcustom valign-max-table-size 4000
+  "Valign doesn't align tables of size larger than this value.
+Valign puts `valign-table-fallback' face onto these tables.  If the
+value is zero, valign doesn't check for table sizes."
+  :type 'integer
+  :group 'valign)
+
+(defface valign-table-fallback
+  '((t . (:inherit fixed-pitch)))
+  "Fallback face for tables whose size exceeds `valign-max-table-size'."
+  :group 'valign)
 
 (defun valign-table-maybe (&optional force go-to-end)
   "Visually align the table at point.
@@ -690,16 +733,30 @@ at the end of the table."
                                 valign-not-align-after-list))))
         (save-excursion
           (valign--beginning-of-table)
-          (if (valign--guess-charset)
-              (valign--table-2)
-            (valign-table-1)))
+          (let ((table-beg (point))
+                (table-end (save-excursion
+                             (valign--end-of-table)
+                             (point))))
+            (if (or (eq valign-max-table-size 0)
+                    (<= (- table-end table-beg) valign-max-table-size))
+                (if (valign--guess-charset)
+                    (valign--table-2)
+                  (valign-table-1))
+              ;; Can't align the table, put fallback-face on.
+              (valign--clean-text-property table-beg table-end)
+              (valign--put-overlay table-beg table-end
+                                   'face 'valign-table-fallback))))
         (when go-to-end (valign--end-of-table)))
 
     ((debug valign-parse-error error)
      (valign--clean-text-property
       (save-excursion (valign--beginning-of-table) (point))
       (save-excursion (valign--end-of-table) (point)))
-     (message "%s" (error-message-string err)))))
+     ;; Ignore parse error when not in debug mode.
+     (if (and (not valign-signal-parse-error)
+              (eq (car err) 'valign-parse-error))
+         nil
+       (signal (car err) (cdr err))))))
 
 (defun valign-table-1 ()
   "Visually align the table at point."
