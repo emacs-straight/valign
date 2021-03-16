@@ -5,7 +5,7 @@
 ;; Author: Yuan Fu <casouri@gmail.com>
 ;; Maintainer: Yuan Fu <casouri@gmail.com>
 ;; URL: https://github.com/casouri/valign
-;; Version: 3.1.0
+;; Version: 3.1.1
 ;; Keywords: convenience, text, table
 ;; Package-Requires: ((emacs "26.0"))
 
@@ -107,9 +107,7 @@
 (require 'cl-lib)
 (require 'pcase)
 
-(defgroup valign
-  '((valign-lighter custom-variable)
-    (valign-fancy-bar custom-variable))
+(defgroup valign nil
   "Visually align text tables on GUI."
   :group 'text)
 
